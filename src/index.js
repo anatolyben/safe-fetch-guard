@@ -3,8 +3,7 @@ export {
   isSafeUrlSyntax,
   assertPublicUrl,
   ipv4ToLong,
-  expandV6,
-  configureV4Blocks
+  expandV6
 } from "./ssrfGuard.js";
 
 export { safeFetch, SafeFetchError } from "./safeFetch.js";

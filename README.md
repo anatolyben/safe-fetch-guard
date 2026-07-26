@@ -1,6 +1,6 @@
 # safe-fetch-guard
 
-A robust, drop-in framework for making SSRF-safe HTTP requests in Node.js, and an Express middleware to protect your application from malicious user-submitted URLs.
+DNS-pinned, bounded HTTP fetching for untrusted outbound URLs in Node.js, plus preflight URL validation middleware for Express.
 
 ## The Problem
 Server-Side Request Forgery (SSRF) occurs when a web application makes HTTP requests to an arbitrary URL provided by a user. If left unchecked, attackers can force your server to make requests to internal resources (like AWS/GCP metadata endpoints `169.254.169.254`, loopback addresses `127.0.0.1`, or internal private subnets like `10.0.0.0/8`). 
@@ -9,7 +9,7 @@ Standard libraries like `fetch` or `axios` do **not** protect against this by de
 
 **`safe-fetch-guard` solves this by:**
 1. Rejecting bad URL syntax and known private IPs.
-2. Resolving the URL at dispatch time and verifying the resolved IP is public.
+2. Resolving every address at dispatch time, rejecting private results, and pinning the actual connection to the validated address set.
 3. Automatically breaking redirect loops and validating every hop in a redirect chain.
 4. Enforcing byte-size caps on incoming response bodies.
 
@@ -21,7 +21,7 @@ npm install safe-fetch-guard
 
 ## Usage as a Utility (`safeFetch`)
 
-`safeFetch` is designed as a secure, drop-in replacement for standard `fetch`.
+`safeFetch` is the protected dispatch path. It deliberately uses its own Undici transport so callers cannot accidentally replace the DNS-bound connection with an unvalidated fetch implementation.
 
 ```javascript
 import { safeFetch, SafeFetchError } from 'safe-fetch-guard';
@@ -45,7 +45,7 @@ try {
 
 ## Usage as Express Middleware
 
-You can use the built-in Express middleware to automatically intercept and validate any URL found in incoming request bodies or query parameters.
+The Express middleware checks URL syntax and its current DNS resolution before accepting a request. That is useful input validation, but it cannot secure a later, separate HTTP client call. Use `safeFetch` when the application eventually dispatches the URL.
 
 ```javascript
 import express from 'express';
@@ -56,8 +56,7 @@ app.use(express.json());
 
 // Protect the `webhookUrl` field in req.body
 app.post('/api/register-webhook', ssrfMiddleware({ bodyFields: ['webhookUrl'] }), (req, res) => {
-  // If we reach here, req.body.webhookUrl is syntactically safe
-  // and does not resolve to an internal IP!
+  // Preflight passed. Persist the URL, then use safeFetch when dispatching it.
   res.send('Webhook registered!');
 });
 
@@ -65,11 +64,21 @@ app.listen(3000);
 ```
 
 ## Features
-- **DNS Rebinding Protection:** Ensures that the URL resolves to a public IP right before the request is made.
+- **DNS Rebinding Protection:** `safeFetch` pins the connection lookup to the exact public address set validated immediately before each request.
 - **Internal IP Blocking:** By default, loopback addresses (`127.0.0.1`), link-local IPs (like `169.254.169.254`), and all private RFC1918 blocks are strictly rejected.
 - **Redirect Validation:** If the target server redirects, `safe-fetch-guard` manually checks the redirect location to ensure it is not attempting to pivot into an internal network.
+- **Credential Isolation:** Authorization and cookie headers are removed when a redirect crosses origins.
+- **Bounded Lifetime:** The timeout remains active until the response body is consumed or explicitly closed.
 - **Size Capping:** Safely caps the response body size while streaming to prevent memory exhaustion (DoS).
 - **Extensible:** Override user-agents, timeout limits, and even toggle localhost allowances for testing environments.
+
+## Response cleanup
+
+Calling `text()`, `json()`, or `arrayBuffer()` consumes the bounded body and releases the transport. If you intentionally do not consume the body, call `await response.close()`.
+
+## Version 2
+
+Version 2 removes the injectable fetch implementation because an arbitrary client could ignore the pinned dispatcher and silently reintroduce DNS rebinding. It also makes Undici an explicit dependency and requires Node.js 18.17 or newer.
 
 ## License
 MIT

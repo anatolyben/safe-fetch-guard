@@ -1,4 +1,5 @@
 import { assertPublicUrl } from "./ssrfGuard.js";
+import { Agent, fetch as transportFetch } from "undici";
 
 const DEFAULTS = {
   timeoutMs: 8000,
@@ -25,7 +26,7 @@ async function readBounded(response, maxBytes) {
     if (Buffer.byteLength(text, "utf8") > maxBytes) {
       throw new SafeFetchError("response_too_large");
     }
-    return text;
+    return Buffer.from(text, "utf8");
   }
   
   const reader = response.body.getReader();
@@ -50,9 +51,12 @@ async function readBounded(response, maxBytes) {
 }
 
 class SafeResponse {
-  constructor(response, maxBytes, finalUrl) {
+  constructor(response, maxBytes, finalUrl, controller, cleanup) {
     this._response = response;
     this._maxBytes = maxBytes;
+    this._controller = controller;
+    this._cleanup = cleanup;
+    this._closed = false;
     this.status = response.status;
     this.statusText = response.statusText;
     this.ok = response.ok;
@@ -61,19 +65,119 @@ class SafeResponse {
   }
 
   async arrayBuffer() {
-    const buf = await readBounded(this._response, this._maxBytes);
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    try {
+      const buf = await readBounded(this._response, this._maxBytes);
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    } catch (error) {
+      if (error?.name === "AbortError" || this._controller.signal.aborted) {
+        throw new SafeFetchError("timeout");
+      }
+      throw error;
+    } finally {
+      await this.close();
+    }
   }
 
   async text() {
-    const buf = await readBounded(this._response, this._maxBytes);
-    return buf.toString("utf8");
+    try {
+      const buf = await readBounded(this._response, this._maxBytes);
+      return buf.toString("utf8");
+    } catch (error) {
+      if (error?.name === "AbortError" || this._controller.signal.aborted) {
+        throw new SafeFetchError("timeout");
+      }
+      throw error;
+    } finally {
+      await this.close();
+    }
   }
 
   async json() {
     const txt = await this.text();
     return JSON.parse(txt);
   }
+
+  async close() {
+    if (this._closed) return;
+    this._closed = true;
+    await this._response.body?.cancel?.().catch(() => {});
+    await this._cleanup();
+  }
+
+  async [Symbol.asyncDispose]() {
+    await this.close();
+  }
+}
+
+function normalizedHostname(hostname) {
+  return hostname.toLowerCase().replace(/\.$/, "");
+}
+
+function lookupError(hostname) {
+  const error = new Error(`getaddrinfo ENOTFOUND ${hostname}`);
+  error.code = "ENOTFOUND";
+  error.hostname = hostname;
+  return error;
+}
+
+function createPinnedLookup(expectedHostname, addresses) {
+  const expected = normalizedHostname(expectedHostname);
+  const pinned = addresses.map(({ address, family }) => ({ address, family }));
+
+  return (hostname, options, callback) => {
+    if (normalizedHostname(hostname) !== expected) {
+      queueMicrotask(() => callback(lookupError(hostname)));
+      return;
+    }
+
+    const requestedFamily = Number(options?.family) || 0;
+    const matching = requestedFamily
+      ? pinned.filter(({ family }) => family === requestedFamily)
+      : pinned;
+
+    if (!matching.length) {
+      queueMicrotask(() => callback(lookupError(hostname)));
+      return;
+    }
+
+    if (options?.all) {
+      queueMicrotask(() => callback(null, matching));
+      return;
+    }
+
+    const [{ address, family }] = matching;
+    queueMicrotask(() => callback(null, address, family));
+  };
+}
+
+function createPinnedDispatcher(parsed, addresses) {
+  return new Agent({
+    connect: {
+      lookup: createPinnedLookup(parsed.hostname, addresses),
+    },
+  });
+}
+
+async function closeResponseAndDispatcher(response, dispatcher) {
+  await response?.body?.cancel?.().catch(() => {});
+  await dispatcher.close();
+}
+
+function normalizeHeaders(headers) {
+  return Object.fromEntries(new Headers(headers).entries());
+}
+
+function stripCrossOriginCredentials(headers) {
+  const sanitized = { ...headers };
+  for (const name of [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "cookie2",
+  ]) {
+    delete sanitized[name];
+  }
+  return sanitized;
 }
 
 /**
@@ -89,7 +193,7 @@ class SafeResponse {
  * @param {string} [opts.method="GET"]
  * @param {object} [opts.headers]
  * @param {string|Buffer} [opts.body]
- * @param {typeof fetch} [opts.fetchImpl] injectable fetch (tests)
+ * @param {typeof import("node:dns").promises.lookup} [opts.lookupImpl]
  * @returns {Promise<SafeResponse>}
  */
 export async function safeFetch(startUrl, opts = {}) {
@@ -103,27 +207,29 @@ export async function safeFetch(startUrl, opts = {}) {
     method = "GET",
     headers = {},
     body,
-    fetchImpl = fetch,
+    lookupImpl,
   } = opts;
 
   const controller = new AbortController();
-  
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  
+  let externalAbort;
+  let responseOwnsCleanup = false;
+
   if (signal) {
     if (signal.aborted) {
       clearTimeout(timer);
       throw new SafeFetchError("timeout", "AbortError");
     }
-    signal.addEventListener("abort", () => controller.abort());
+    externalAbort = () => controller.abort();
+    signal.addEventListener("abort", externalAbort, { once: true });
   }
 
   let currentUrl = startUrl;
   let initOpts = {
     method,
     headers: {
-      "User-Agent": userAgent,
-      ...headers,
+      "user-agent": userAgent,
+      ...normalizeHeaders(headers),
     },
     body,
     redirect: "manual",
@@ -132,24 +238,44 @@ export async function safeFetch(startUrl, opts = {}) {
 
   try {
     for (let hop = 0; hop <= maxRedirects; hop++) {
-      const safe = await assertPublicUrl(currentUrl, { allowLocalhost });
+      const safe = await assertPublicUrl(currentUrl, {
+        allowLocalhost,
+        lookupImpl,
+      });
       if (!safe.ok) {
         throw new SafeFetchError("unsafe_url", safe.reason);
       }
 
-      const response = await fetchImpl(currentUrl, initOpts);
+      const dispatcher = createPinnedDispatcher(safe.parsed, safe.addresses);
+      let response;
+      try {
+        response = await transportFetch(currentUrl, {
+          ...initOpts,
+          dispatcher,
+        });
+      } catch (error) {
+        await dispatcher.close();
+        throw error;
+      }
 
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
         if (!location || hop === maxRedirects) {
+          await closeResponseAndDispatcher(response, dispatcher);
           throw new SafeFetchError("redirect_limit");
         }
+        const previousOrigin = new URL(currentUrl).origin;
         currentUrl = new URL(location, currentUrl).toString();
+        await closeResponseAndDispatcher(response, dispatcher);
+        if (new URL(currentUrl).origin !== previousOrigin) {
+          initOpts.headers = stripCrossOriginCredentials(initOpts.headers);
+        }
         
         // On 303, or 301/302 POST, change to GET and drop body
         if (
           response.status === 303 ||
-          ((response.status === 301 || response.status === 302) && method === "POST")
+          ((response.status === 301 || response.status === 302) &&
+            initOpts.method === "POST")
         ) {
           initOpts.method = "GET";
           delete initOpts.body;
@@ -157,7 +283,20 @@ export async function safeFetch(startUrl, opts = {}) {
         continue;
       }
       
-      return new SafeResponse(response, maxBytes, currentUrl);
+      responseOwnsCleanup = true;
+      return new SafeResponse(
+        response,
+        maxBytes,
+        currentUrl,
+        controller,
+        async () => {
+          clearTimeout(timer);
+          if (signal && externalAbort) {
+            signal.removeEventListener("abort", externalAbort);
+          }
+          await dispatcher.close();
+        },
+      );
     }
     throw new SafeFetchError("redirect_limit");
   } catch (error) {
@@ -166,6 +305,11 @@ export async function safeFetch(startUrl, opts = {}) {
     }
     throw error;
   } finally {
-    clearTimeout(timer);
+    if (!responseOwnsCleanup) {
+      clearTimeout(timer);
+      if (signal && externalAbort) {
+        signal.removeEventListener("abort", externalAbort);
+      }
+    }
   }
 }

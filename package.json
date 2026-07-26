@@ -1,9 +1,17 @@
 {
   "name": "safe-fetch-guard",
-  "version": "1.0.1",
-  "description": "SSRF-safe URL validation and bounded, redirect-controlled HTTP fetch for untrusted outbound requests",
+  "version": "2.0.0",
+  "description": "DNS-pinned, bounded HTTP fetching for untrusted outbound URLs",
   "main": "src/index.js",
   "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "vitest run"
   },
@@ -26,6 +34,9 @@
     "url": "https://github.com/anatolyben/safe-fetch-guard/issues"
   },
   "homepage": "https://github.com/anatolyben/safe-fetch-guard#readme",
+  "engines": {
+    "node": ">=18.17.0"
+  },
   "devDependencies": {
     "express": "^4.19.0",
     "supertest": "^7.0.0",
@@ -38,5 +49,8 @@
     "express": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "undici": "^6.28.0"
   }
 }

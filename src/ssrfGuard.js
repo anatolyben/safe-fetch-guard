@@ -25,8 +25,12 @@ const DEFAULT_V4_BLOCKS = [
   ["169.254.0.0", 16], // link-local (incl. 169.254.169.254 cloud metadata)
   ["172.16.0.0", 12], // private
   ["192.0.0.0", 24], // IETF protocol assignments
+  ["192.0.2.0", 24], // documentation (TEST-NET-1)
+  ["192.88.99.0", 24], // deprecated 6to4 relay anycast
   ["192.168.0.0", 16], // private
   ["198.18.0.0", 15], // benchmarking
+  ["198.51.100.0", 24], // documentation (TEST-NET-2)
+  ["203.0.113.0", 24], // documentation (TEST-NET-3)
   ["224.0.0.0", 4], // multicast
   ["240.0.0.0", 4], // reserved (incl. 255.255.255.255)
 ];
@@ -39,11 +43,7 @@ function compileV4Blocks(blocks) {
   });
 }
 
-let compiledV4Blocks = compileV4Blocks(DEFAULT_V4_BLOCKS);
-
-export function configureV4Blocks(blocks) {
-  compiledV4Blocks = compileV4Blocks(blocks);
-}
+const compiledV4Blocks = compileV4Blocks(DEFAULT_V4_BLOCKS);
 
 function isPrivateV4(ip) {
   const long = ipv4ToLong(ip);
@@ -98,9 +98,35 @@ function isPrivateV6(ip) {
     const v4 = `${h[6] >> 8}.${h[6] & 0xff}.${h[7] >> 8}.${h[7] & 0xff}`;
     return isPrivateV4(v4);
   }
-  if ((h[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
-  if ((h[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+
+  // Fail closed outside 2000::/3, the currently allocated global-unicast space.
+  // This rejects unique-local, link-local, multicast, NAT64, discard-only, and
+  // other special-purpose ranges by construction.
+  if ((h[0] & 0xe000) !== 0x2000) return true;
+
+  // Special-purpose ranges that sit inside 2000::/3.
+  if (matchesV6Prefix(h, "2001::", 23)) return true; // IETF protocol assignments
+  if (matchesV6Prefix(h, "2001:db8::", 32)) return true; // documentation
+  if (matchesV6Prefix(h, "2002::", 16)) return true; // 6to4 transition
   return false;
+}
+
+function hextetsToBigInt(hextets) {
+  return hextets.reduce(
+    (value, hextet) => (value << 16n) | BigInt(hextet),
+    0n,
+  );
+}
+
+function matchesV6Prefix(hextets, base, prefixLength) {
+  const baseHextets = expandV6(base);
+  if (!baseHextets) return false;
+  const shift = 128n - BigInt(prefixLength);
+  return (
+    hextetsToBigInt(hextets) >> shift
+  ) === (
+    hextetsToBigInt(baseHextets) >> shift
+  );
 }
 
 /** True for any loopback / private / link-local / reserved IP literal. */
@@ -144,41 +170,73 @@ export function isSafeUrlSyntax(url, opts = {}) {
 /**
  * Full pre-flight check for dispatch time. Validates syntax, then resolves the
  * hostname and rejects if any resolved address is private/reserved.
- * @returns {Promise<{ok: true, parsed: URL} | {ok: false, reason: string}>}
+ * @returns {Promise<
+ *   {ok: true, parsed: URL, addresses: Array<{address: string, family: number}>}
+ *   | {ok: false, reason: string}
+ * >}
  */
 export async function assertPublicUrl(url, opts = {}) {
-  const { allowLocalhost = false } = opts;
+  const {
+    allowLocalhost = false,
+    lookupImpl = dns.promises.lookup,
+  } = opts;
   const parsed = isSafeUrlSyntax(url, { allowLocalhost });
   if (!parsed) return { ok: false, reason: "invalid_or_private_url" };
 
   const host = parsed.hostname.replace(/^\[|\]$/g, "");
+  const literalFamily = net.isIP(host);
 
   // Literal IP: already covered by isSafeUrlSyntax, but be explicit.
-  if (net.isIP(host)) {
+  if (literalFamily) {
     if (allowLocalhost && (host === '127.0.0.1' || host === '::1')) {
-      return { ok: true, parsed };
+      return {
+        ok: true,
+        parsed,
+        addresses: [{ address: host, family: literalFamily }],
+      };
     }
     return isPrivateIp(host)
       ? { ok: false, reason: "private_ip" }
-      : { ok: true, parsed };
+      : {
+          ok: true,
+          parsed,
+          addresses: [{ address: host, family: literalFamily }],
+        };
   }
 
   let addresses;
   try {
-    addresses = await dns.promises.lookup(host, { all: true });
+    addresses = await lookupImpl(host, { all: true, verbatim: true });
   } catch {
     return { ok: false, reason: "dns_resolution_failed" };
   }
-  if (!addresses.length) return { ok: false, reason: "dns_no_records" };
+  if (!Array.isArray(addresses) || !addresses.length) {
+    return { ok: false, reason: "dns_no_records" };
+  }
+
+  const validAddresses = addresses.filter(
+    ({ address, family }) =>
+      typeof address === "string" &&
+      net.isIP(address) === family &&
+      (family === 4 || family === 6),
+  );
+  if (validAddresses.length !== addresses.length) {
+    return { ok: false, reason: "dns_invalid_record" };
+  }
   
-  const hasPrivate = addresses.some((a) => isPrivateIp(a.address));
+  const hasPrivate = validAddresses.some((a) => isPrivateIp(a.address));
   
   if (hasPrivate) {
-    if (allowLocalhost && addresses.every(a => a.address === '127.0.0.1' || a.address === '::1')) {
-      return { ok: true, parsed };
+    if (
+      allowLocalhost &&
+      validAddresses.every(
+        (a) => a.address === '127.0.0.1' || a.address === '::1',
+      )
+    ) {
+      return { ok: true, parsed, addresses: validAddresses };
     }
     return { ok: false, reason: "resolves_to_private_ip" };
   }
   
-  return { ok: true, parsed };
+  return { ok: true, parsed, addresses: validAddresses };
 }
