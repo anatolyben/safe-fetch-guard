@@ -16,8 +16,16 @@
     "webhook",
     "dns-rebinding"
   ],
-  "author": "",
+  "author": "Anatoly Ben",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anatolyben/safe-fetch-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/anatolyben/safe-fetch-guard/issues"
+  },
+  "homepage": "https://github.com/anatolyben/safe-fetch-guard#readme",
   "devDependencies": {
     "express": "^4.19.0",
     "supertest": "^7.0.0",
