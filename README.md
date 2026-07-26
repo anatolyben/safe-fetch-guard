@@ -78,7 +78,7 @@ Calling `text()`, `json()`, or `arrayBuffer()` consumes the bounded body and rel
 
 ## Version 2
 
-Version 2 removes the injectable fetch implementation because an arbitrary client could ignore the pinned dispatcher and silently reintroduce DNS rebinding. It also makes Undici an explicit dependency and requires Node.js 18.17 or newer.
+Version 2 removes the injectable fetch implementation because an arbitrary client could ignore the pinned dispatcher and silently reintroduce DNS rebinding. It also makes Undici an explicit dependency and requires Node.js 20 or newer.
 
 ## License
 MIT
