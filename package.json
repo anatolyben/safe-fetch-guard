@@ -1,5 +1,5 @@
 {
-  "name": "ssrf-guard",
+  "name": "safe-fetch-guard",
   "version": "1.0.0",
   "description": "SSRF-safe URL validation and bounded, redirect-controlled HTTP fetch for untrusted outbound requests",
   "main": "src/index.js",
