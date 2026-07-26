@@ -1,6 +1,6 @@
 {
   "name": "safe-fetch-guard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "SSRF-safe URL validation and bounded, redirect-controlled HTTP fetch for untrusted outbound requests",
   "main": "src/index.js",
   "type": "module",
