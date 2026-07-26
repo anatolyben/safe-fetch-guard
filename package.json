@@ -1,0 +1,34 @@
+{
+  "name": "ssrf-guard",
+  "version": "1.0.0",
+  "description": "SSRF-safe URL validation and bounded, redirect-controlled HTTP fetch for untrusted outbound requests",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "keywords": [
+    "ssrf",
+    "security",
+    "fetch",
+    "express",
+    "middleware",
+    "webhook",
+    "dns-rebinding"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "express": "^4.19.0",
+    "supertest": "^7.0.0",
+    "vitest": "^1.6.0"
+  },
+  "peerDependencies": {
+    "express": "^4.0.0 || ^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "express": {
+      "optional": true
+    }
+  }
+}
