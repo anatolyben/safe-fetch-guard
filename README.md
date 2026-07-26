@@ -1,4 +1,4 @@
-# ssrf-guard
+# safe-fetch-guard
 
 A robust, drop-in framework for making SSRF-safe HTTP requests in Node.js, and an Express middleware to protect your application from malicious user-submitted URLs.
 
@@ -7,7 +7,7 @@ Server-Side Request Forgery (SSRF) occurs when a web application makes HTTP requ
 
 Standard libraries like `fetch` or `axios` do **not** protect against this by default, and a simple Regex check is often bypassable via DNS rebinding (e.g., setting a public domain to resolve to `127.0.0.1`).
 
-**`ssrf-guard` solves this by:**
+**`safe-fetch-guard` solves this by:**
 1. Rejecting bad URL syntax and known private IPs.
 2. Resolving the URL at dispatch time and verifying the resolved IP is public.
 3. Automatically breaking redirect loops and validating every hop in a redirect chain.
@@ -16,7 +16,7 @@ Standard libraries like `fetch` or `axios` do **not** protect against this by de
 ## Installation
 
 ```bash
-npm install ssrf-guard
+npm install safe-fetch-guard
 ```
 
 ## Usage as a Utility (`safeFetch`)
@@ -24,7 +24,7 @@ npm install ssrf-guard
 `safeFetch` is designed as a secure, drop-in replacement for standard `fetch`.
 
 ```javascript
-import { safeFetch, SafeFetchError } from 'ssrf-guard';
+import { safeFetch, SafeFetchError } from 'safe-fetch-guard';
 
 try {
   // Pass an untrusted webhook or scraping URL safely
@@ -49,7 +49,7 @@ You can use the built-in Express middleware to automatically intercept and valid
 
 ```javascript
 import express from 'express';
-import { ssrfMiddleware } from 'ssrf-guard';
+import { ssrfMiddleware } from 'safe-fetch-guard';
 
 const app = express();
 app.use(express.json());
@@ -67,7 +67,7 @@ app.listen(3000);
 ## Features
 - **DNS Rebinding Protection:** Ensures that the URL resolves to a public IP right before the request is made.
 - **Internal IP Blocking:** By default, loopback addresses (`127.0.0.1`), link-local IPs (like `169.254.169.254`), and all private RFC1918 blocks are strictly rejected.
-- **Redirect Validation:** If the target server redirects, `ssrf-guard` manually checks the redirect location to ensure it is not attempting to pivot into an internal network.
+- **Redirect Validation:** If the target server redirects, `safe-fetch-guard` manually checks the redirect location to ensure it is not attempting to pivot into an internal network.
 - **Size Capping:** Safely caps the response body size while streaming to prevent memory exhaustion (DoS).
 - **Extensible:** Override user-agents, timeout limits, and even toggle localhost allowances for testing environments.
 
